@@ -80,6 +80,9 @@ async def init(interaction: discord.Interaction):
                    "**Important:** Run this command once every month to keep your badge active!",
         color=0x5865F2
     )
+    embed.set_footer(text="Bot created using https://github.com/Gur0v/easyactivedev")
+    await interaction.response.send_message(embed=embed)
+    )
     await interaction.response.send_message(embed=embed)
 
 async def cleanup():
