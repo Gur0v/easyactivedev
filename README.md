@@ -55,7 +55,7 @@ In the OAuth2 URL Generator, select:
 
 ```bash
 # Clone repository
-git clone https://github.com/Gur0v/easyactivedev.git
+git clone --depth=1 https://github.com/Gur0v/easyactivedev.git
 cd easyactivedev
 
 # Make executable and run
