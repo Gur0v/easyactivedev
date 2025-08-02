@@ -100,6 +100,7 @@ easyactivedev/
 | Issue | Solution |
 |-------|----------|
 | Command not found | Verify bot permissions and server invitation |
+| Badge claim fails | Ensure your server has Community features enabled |
 | Module import errors | Delete `.deps_installed` and restart |
 | Permission denied | Ensure write access to project directory |
 | Signal handling issues | Use `exec` wrapper for proper process management |
