@@ -19,44 +19,42 @@ def print_success(msg):
 def print_error(msg):
     print(f"[ERROR] {msg}")
 
-def generate_key_from_password(password: str) -> bytes:
+def generate_key(password):
     return base64.urlsafe_b64encode(password.encode().ljust(32)[:32])
 
-def encrypt_token(token: str, password: str) -> str:
-    key = generate_key_from_password(password)
+def encrypt_token(token, password):
+    key = generate_key(password)
     fernet = Fernet(key)
     return fernet.encrypt(token.encode()).decode()
 
-def decrypt_token(encrypted_token: str, password: str) -> str:
-    key = generate_key_from_password(password)
+def decrypt_token(encrypted_token, password):
+    key = generate_key(password)
     fernet = Fernet(key)
     return fernet.decrypt(encrypted_token.encode()).decode()
 
-def save_encrypted_token(encrypted_token: str):
+def save_token(encrypted_token):
     with open('.token', 'w') as f:
         f.write(encrypted_token)
 
-def load_encrypted_token():
+def load_token():
     try:
         with open('.token', 'r') as f:
             return f.read().strip()
     except FileNotFoundError:
         return None
 
-def get_or_create_password():
+def get_password():
     if os.path.exists('.pass'):
         with open('.pass', 'r') as f:
             return f.read().strip()
-    else:
-        password = os.urandom(32).hex()
-        with open('.pass', 'w') as f:
-            f.write(password)
-        return password
+    password = os.urandom(32).hex()
+    with open('.pass', 'w') as f:
+        f.write(password)
+    return password
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
-
 shutdown_event = asyncio.Event()
 
 @bot.event
@@ -66,10 +64,10 @@ async def on_ready():
         synced = await bot.tree.sync()
         print_success(f"Synced {len(synced)} commands")
     except Exception as e:
-        print_error(f"Failed to sync commands: {e}")
+        print_error(f"Failed to sync: {e}")
 
 @bot.tree.command(name="init", description="Initialize active developer status")
-async def init(interaction: discord.Interaction):
+async def init(interaction):
     embed = discord.Embed(
         title="Active Developer Badge",
         description="✅ Command executed successfully!\n\n"
@@ -81,8 +79,6 @@ async def init(interaction: discord.Interaction):
         color=0x5865F2
     )
     embed.set_footer(text="Bot created using https://github.com/Gur0v/easyactivedev")
-    await interaction.response.send_message(embed=embed))
-    )
     await interaction.response.send_message(embed=embed)
 
 async def cleanup():
@@ -98,30 +94,28 @@ async def cleanup():
     
     print_success("Cleanup complete")
 
-def signal_handler(sig, frame):
-    pass
+def signal_handler():
+    print_step("Interrupt received, shutting down...")
+    shutdown_event.set()
 
-async def main():
-    encrypted_token = load_encrypted_token()
+async def setup_token():
+    encrypted_token = load_token()
     
     if encrypted_token is None:
-        print_step("First run - token setup required")
+        print_step("Token setup required")
         token = getpass.getpass("Enter Discord bot token: ")
-        password = get_or_create_password()
+        password = get_password()
         encrypted_token = encrypt_token(token, password)
-        save_encrypted_token(encrypted_token)
-        print_success("Token encrypted and saved")
+        save_token(encrypted_token)
+        print_success("Token saved")
     
-    password = get_or_create_password()
-    token = decrypt_token(encrypted_token, password)
-    
-    def async_signal_handler():
-        print_step("Interrupt received, shutting down...")
-        shutdown_event.set()
-    
+    password = get_password()
+    return decrypt_token(encrypted_token, password)
+
+async def run_bot(token):
     loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGINT, async_signal_handler)
-    loop.add_signal_handler(signal.SIGTERM, async_signal_handler)
+    loop.add_signal_handler(signal.SIGINT, signal_handler)
+    loop.add_signal_handler(signal.SIGTERM, signal_handler)
     
     print_step("Starting bot (stage 2)...")
     
@@ -146,11 +140,15 @@ async def main():
                 raise task.exception()
                 
     except KeyboardInterrupt:
-        print_step("Keyboard interrupt received")
+        print_step("Keyboard interrupt")
     except Exception as e:
         print_error(f"Bot error: {e}")
     finally:
         await cleanup()
+
+async def main():
+    token = await setup_token()
+    await run_bot(token)
 
 if __name__ == "__main__":
     try:
