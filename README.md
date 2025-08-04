@@ -7,7 +7,7 @@
 
 ## Overview
 
-EasyActiveDev provides a production-ready solution for Discord developers to obtain and maintain their Active Developer Badge. The bot implements enterprise-grade security with military-level encryption while maintaining a simple user experience.
+EasyActiveDev provides a production-ready solution for Discord users to obtain and maintain their Active Developer Badge. The bot implements enterprise-grade security with military-level encryption while maintaining a simple user experience.
 
 ## Features
 
