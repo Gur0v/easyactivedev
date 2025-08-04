@@ -52,7 +52,7 @@ main() {
     setup_venv
     install_deps
     log "INFO" "Starting bot..."
-    exec python core.py
+    exec python3 core.py
 }
 
 main
