@@ -7,121 +7,176 @@ import os
 import signal
 import sys
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 import getpass
+import secrets
+import stat
 
-def print_step(msg):
-    print(f"[INFO] {msg}")
+def log(level, msg):
+    print(f"[{level}] {msg}")
 
-def print_success(msg):
-    print(f"[OK] {msg}")
+def derive_key(password, salt):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
-def print_error(msg):
-    print(f"[ERROR] {msg}")
+def encrypt_data(data, password):
+    salt = secrets.token_bytes(16)
+    key = derive_key(password, salt)
+    return base64.urlsafe_b64encode(salt + Fernet(key).encrypt(data.encode())).decode()
 
-def generate_key(password):
-    return base64.urlsafe_b64encode(password.encode().ljust(32)[:32])
-
-def encrypt_token(token, password):
-    key = generate_key(password)
-    fernet = Fernet(key)
-    return fernet.encrypt(token.encode()).decode()
-
-def decrypt_token(encrypted_token, password):
-    key = generate_key(password)
-    fernet = Fernet(key)
-    return fernet.decrypt(encrypted_token.encode()).decode()
-
-def save_token(encrypted_token):
-    with open('.token', 'w') as f:
-        f.write(encrypted_token)
-
-def load_token():
+def decrypt_data(encrypted_data, password):
     try:
-        with open('.token', 'r') as f:
+        decoded = base64.urlsafe_b64decode(encrypted_data.encode())
+        salt, encrypted = decoded[:16], decoded[16:]
+        key = derive_key(password, salt)
+        return Fernet(key).decrypt(encrypted).decode()
+    except Exception:
+        raise ValueError("Invalid token or password")
+
+def secure_write(filename, data):
+    with open(filename, 'w') as f:
+        f.write(data)
+    os.chmod(filename, stat.S_IRUSR | stat.S_IWUSR)
+
+def secure_read(filename):
+    try:
+        with open(filename, 'r') as f:
             return f.read().strip()
     except FileNotFoundError:
         return None
 
-def get_password():
-    if os.path.exists('.pass'):
-        with open('.pass', 'r') as f:
-            return f.read().strip()
-    password = os.urandom(32).hex()
-    with open('.pass', 'w') as f:
-        f.write(password)
-    return password
+def get_master_key():
+    keyfile = '.master'
+    if os.path.exists(keyfile):
+        return secure_read(keyfile)
+    
+    key = secrets.token_urlsafe(32)
+    secure_write(keyfile, key)
+    os.chmod(keyfile, stat.S_IRUSR)
+    return key
+
+def validate_token(token):
+    if not token or len(token) < 50 or not token.replace('.', '').replace('-', '').replace('_', '').isalnum():
+        raise ValueError("Invalid token format")
+    return token
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='/', intents=intents)
-shutdown_event = asyncio.Event()
+intents.guilds = True
+
+bot = commands.Bot(
+    command_prefix='/',
+    intents=intents,
+    help_command=None,
+    case_insensitive=False
+)
+
+shutdown = asyncio.Event()
 
 @bot.event
 async def on_ready():
-    print_success(f"Bot ready: {bot.user}")
+    log("OK", f"Authenticated as {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
-        print_success(f"Synced {len(synced)} commands")
-    except Exception as e:
-        print_error(f"Failed to sync: {e}")
+        log("OK", f"Synced {len(synced)} slash commands")
+    except discord.HTTPException as e:
+        log("ERROR", f"Failed to sync commands: {e}")
 
-@bot.tree.command(name="init", description="Initialize active developer status")
-async def init(interaction):
+@bot.event
+async def on_error(event, *args, **kwargs):
+    log("ERROR", f"Discord event error in {event}")
+
+@bot.tree.command(name="init", description="Initialize Discord Active Developer Badge")
+async def init_dev(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command must be used in a server.", ephemeral=True)
+        return
+    
     embed = discord.Embed(
-        title="Active Developer Badge",
-        description="✅ Command executed successfully!\n\n"
-                   "**Next steps:**\n"
-                   "• Wait 2 days from now\n"
-                   "• Visit https://discord.com/developers/active-developer\n"
-                   "• Claim your badge\n\n"
-                   "**Important:** Run this command once every month to keep your badge active!",
-        color=0x5865F2
+        title="🏆 Active Developer Badge",
+        description="✅ **Command executed successfully!**\n\n"
+                   "**Next Steps:**\n"
+                   "🕐 Wait 24-48 hours\n"
+                   "🌐 Visit: https://discord.com/developers/active-developer\n"
+                   "🎖️ Claim your badge\n\n"
+                   "⚠️ **Reminder:** Execute monthly to maintain badge status",
+        color=0x5865F2,
+        timestamp=discord.utils.utcnow()
     )
-    embed.set_footer(text="Bot created using https://github.com/Gur0v/easyactivedev")
-    await interaction.response.send_message(embed=embed)
+    embed.set_footer(text="Bot created using https://github.com/Gur0v/easyactivedev", icon_url=bot.user.display_avatar.url)
+    
+    try:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log("INFO", f"Badge command executed for {interaction.user} in {interaction.guild}")
+    except discord.HTTPException as e:
+        log("ERROR", f"Failed to respond to interaction: {e}")
 
-async def cleanup():
-    print_step("Cleaning up...")
+async def graceful_shutdown():
+    log("INFO", "Initiating graceful shutdown...")
+    
     if not bot.is_closed():
         await bot.close()
     
-    tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+    tasks = [t for t in asyncio.all_tasks() if t != asyncio.current_task()]
     if tasks:
+        log("INFO", f"Cancelling {len(tasks)} remaining tasks...")
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
     
-    print_success("Cleanup complete")
+    log("OK", "Shutdown complete")
 
-def signal_handler():
-    print_step("Interrupt received, shutting down...")
-    shutdown_event.set()
+def handle_shutdown():
+    log("WARN", "Shutdown signal received")
+    shutdown.set()
 
-async def setup_token():
-    encrypted_token = load_token()
+async def setup_authentication():
+    token_file = '.token'
+    stored_token = secure_read(token_file)
+    master_key = get_master_key()
     
-    if encrypted_token is None:
-        print_step("Token setup required")
-        token = getpass.getpass("Enter Discord bot token: ")
-        password = get_password()
-        encrypted_token = encrypt_token(token, password)
-        save_token(encrypted_token)
-        print_success("Token saved")
-    
-    password = get_password()
-    return decrypt_token(encrypted_token, password)
-
-async def run_bot(token):
-    loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGINT, signal_handler)
-    loop.add_signal_handler(signal.SIGTERM, signal_handler)
-    
-    print_step("Starting bot (stage 2)...")
+    if not stored_token:
+        log("INFO", "First-time setup - token required")
+        while True:
+            try:
+                raw_token = getpass.getpass("Discord Bot Token: ").strip()
+                validate_token(raw_token)
+                encrypted = encrypt_data(raw_token, master_key)
+                secure_write(token_file, encrypted)
+                log("OK", "Token encrypted and stored securely")
+                return raw_token
+            except ValueError as e:
+                log("ERROR", str(e))
+                continue
     
     try:
+        return decrypt_data(stored_token, master_key)
+    except ValueError:
+        log("ERROR", "Token decryption failed - corrupted data")
+        os.remove(token_file)
+        return await setup_authentication()
+
+async def run_bot():
+    try:
+        token = await setup_authentication()
+        
+        loop = asyncio.get_running_loop()
+        if hasattr(signal, 'SIGINT'):
+            loop.add_signal_handler(signal.SIGINT, handle_shutdown)
+        if hasattr(signal, 'SIGTERM'):
+            loop.add_signal_handler(signal.SIGTERM, handle_shutdown)
+        
+        log("INFO", "Starting bot (stage 2)...")
+        
         bot_task = asyncio.create_task(bot.start(token))
-        shutdown_task = asyncio.create_task(shutdown_event.wait())
+        shutdown_task = asyncio.create_task(shutdown.wait())
         
         done, pending = await asyncio.wait(
             [bot_task, shutdown_task],
@@ -136,25 +191,32 @@ async def run_bot(token):
                 pass
         
         for task in done:
-            if task.exception() and not isinstance(task.exception(), asyncio.CancelledError):
-                raise task.exception()
-                
-    except KeyboardInterrupt:
-        print_step("Keyboard interrupt")
+            if task.exception():
+                exc = task.exception()
+                if isinstance(exc, discord.LoginFailure):
+                    log("ERROR", "Authentication failed - invalid token")
+                    if os.path.exists('.token'):
+                        os.remove('.token')
+                elif not isinstance(exc, asyncio.CancelledError):
+                    log("ERROR", f"Bot runtime error: {exc}")
+                    
     except Exception as e:
-        print_error(f"Bot error: {e}")
+        log("ERROR", f"Critical error: {e}")
     finally:
-        await cleanup()
+        await graceful_shutdown()
 
-async def main():
-    token = await setup_token()
-    await run_bot(token)
+def main():
+    try:
+        if os.name == 'nt':
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        log("WARN", "Keyboard interrupt")
+    except Exception as e:
+        log("ERROR", f"Fatal error: {e}")
+    finally:
+        log("OK", "Application terminated")
+        sys.exit(0)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print_success("Bot stopped")
-        sys.exit(0)
+    main()
